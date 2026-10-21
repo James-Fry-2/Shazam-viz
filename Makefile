@@ -10,7 +10,7 @@ CLI_HELPERS := cli/wav.c cli/manifest.c
 CLI_OBJ := $(patsubst cli/%.c,build/cli/%.o,$(CLI_HELPERS))
 CLI_TOOLS := $(patsubst cli/%.c,build/%,$(filter-out $(CLI_HELPERS),$(wildcard cli/*.c)))
 
-all: build/libfp.a build/libcli.a $(CLI_TOOLS)
+all: build/libfp.a build/libcli.a $(CLI_TOOLS) build/synth
 
 build/core build/cli:
 	mkdir -p $@
@@ -34,6 +34,10 @@ build/libcli.a: $(CLI_OBJ)
 	ar rcs $@ $^
 
 build/%: cli/%.c build/libcli.a build/libfp.a $(wildcard cli/*.h)
+	mkdir -p build
+	$(CC) $(BASE) $(OPT) $< build/libcli.a build/libfp.a -lm -o $@
+
+build/synth: data/synth.c build/libcli.a build/libfp.a $(wildcard cli/*.h)
 	mkdir -p build
 	$(CC) $(BASE) $(OPT) $< build/libcli.a build/libfp.a -lm -o $@
 
