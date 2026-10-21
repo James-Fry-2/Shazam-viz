@@ -6,9 +6,11 @@ MODERN  := -O3 -mcpu=native
 
 CORE_SRC := $(wildcard core/*.c)
 CORE_OBJ := $(patsubst core/%.c,build/core/%.o,$(CORE_SRC))
-CLI_TOOLS := $(patsubst cli/%.c,build/%,$(filter-out cli/wav.c cli/manifest.c,$(wildcard cli/*.c)))
+CLI_HELPERS := cli/wav.c cli/manifest.c
+CLI_OBJ := $(patsubst cli/%.c,build/cli/%.o,$(CLI_HELPERS))
+CLI_TOOLS := $(patsubst cli/%.c,build/%,$(filter-out $(CLI_HELPERS),$(wildcard cli/*.c)))
 
-all: build/libfp.a $(CLI_TOOLS)
+all: build/libfp.a build/libcli.a $(CLI_TOOLS)
 
 build/core build/cli:
 	mkdir -p $@
@@ -24,9 +26,16 @@ build/libfp.a: $(CORE_OBJ)
 	rm -f $@
 	ar rcs $@ $^
 
-build/%: cli/%.c build/libfp.a $(wildcard cli/*.h)
+build/cli/%.o: cli/%.c $(wildcard cli/*.h core/*.h) | build/cli
+	$(CC) $(BASE) $(OPT) -c $< -o $@
+
+build/libcli.a: $(CLI_OBJ)
+	rm -f $@
+	ar rcs $@ $^
+
+build/%: cli/%.c build/libcli.a build/libfp.a $(wildcard cli/*.h)
 	mkdir -p build
-	$(CC) $(BASE) $(OPT) $< build/libfp.a -lm -o $@
+	$(CC) $(BASE) $(OPT) $< build/libcli.a build/libfp.a -lm -o $@
 
 test: build/fp-selftest
 	build/fp-selftest

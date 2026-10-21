@@ -3,11 +3,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "channel.h"
 #include "fft.h"
 #include "fingerprint.h"
 #include "index.h"
 #include "match.h"
+#include "manifest.h"
 #include "rng.h"
+#include "wav.h"
 
 static int failures;
 
@@ -414,6 +417,157 @@ static void test_edge_cases(void)
     }
 }
 
+static double tone_gain_db(double hz, float amp, int sat)
+{
+    const int sr = 8000;
+    const size_t n = sr * 2;
+    float *x = malloc(n * sizeof *x);
+    for (size_t i = 0; i < n; i++)
+        x[i] = amp * sinf((float)(2.0 * M_PI * hz * (double)i / sr));
+    if (sat)
+        fp_channel_speaker(x, n, sr);
+    else
+        fp_channel_speaker_filter(x, n, sr);
+    /* second half only, so the filter transient has died away */
+    const double g = fp_rms(x + n / 2, n / 2) / ((double)amp / sqrt(2.0));
+    free(x);
+    return 20.0 * log10(g);
+}
+
+static void test_speaker(void)
+{
+    printf("speaker filter (380 Hz high-pass, 3300 Hz low-pass, Q 0.707)\n");
+    const double g100 = tone_gain_db(100.0, 0.1f, 0);
+    const double g1k = tone_gain_db(1000.0, 0.1f, 0);
+    printf("  filter stage gain at 100 Hz = %+.2f dB, at 1 kHz = %+.2f dB\n", g100, g1k);
+    check(g100 < -12.0, "100 Hz attenuated by more than 12 dB");
+    check(fabs(g1k) < 1.0, "1 kHz within 1 dB of unity");
+    printf("  (with tanh stage at amplitude 0.1: 100 Hz %+.2f dB, 1 kHz %+.2f dB; small signals gain\n"
+           "   drive/tanh(drive) = %.2f dB, so the unity-gain check is on the linear stage)\n",
+           tone_gain_db(100.0, 0.1f, 1), tone_gain_db(1000.0, 0.1f, 1), 20.0 * log10(2.0 / tanh(2.0)));
+}
+
+static void test_noise_snr(void)
+{
+    printf("pink noise SNR\n");
+    fp_config cfg = fp_config_default();
+    size_t n;
+    float *clean = make_sweep_track(7, &cfg, &n);
+    const double targets[] = {30.0, 20.0, 10.0, 5.0, 0.0};
+    int ok = 1;
+    for (size_t k = 0; k < sizeof targets / sizeof *targets; k++) {
+        float *y = malloc(n * sizeof *y);
+        memcpy(y, clean, n * sizeof *y);
+        fp_rng rng;
+        fp_rng_seed(&rng, 100 + k);
+        fp_channel_noise(y, n, targets[k], &rng);
+        for (size_t i = 0; i < n; i++)
+            y[i] -= clean[i];
+        const double measured = 20.0 * log10(fp_rms(clean, n) / fp_rms(y, n));
+        printf("  target %5.1f dB  measured %7.3f dB  error %+.4f dB\n", targets[k], measured, measured - targets[k]);
+        if (fabs(measured - targets[k]) > 0.2)
+            ok = 0;
+        free(y);
+    }
+    check(ok, "measured SNR within +/-0.2 dB of target");
+    free(clean);
+}
+
+static void test_echo(void)
+{
+    printf("echo\n");
+    const int sr = 8000;
+    const size_t n = sr;
+    float *x = calloc(n, sizeof *x);
+    x[0] = 1.0f;
+    fp_rng rng;
+    fp_rng_seed(&rng, 5);
+    fp_channel_echo(x, n, sr, &rng);
+    int taps = 0;
+    size_t last = 0;
+    for (size_t i = 1; i < n; i++)
+        if (x[i] != 0.0f) {
+            taps++;
+            last = i;
+        }
+    printf("  direct = %g, %d taps, last at %.3f s\n", x[0], taps, (double)last / sr);
+    check(x[0] == 1.0f, "direct path has delay 0 and gain 1");
+    check(taps >= 10 && taps <= 12 && last <= sr / 2, "about 12 taps within 0.5 s");
+    free(x);
+}
+
+static void test_resample(void)
+{
+    printf("resampler\n");
+    const int sr_in = 44100;
+    const size_t n = sr_in * 2;
+    float *x = malloc(n * sizeof *x);
+    for (size_t i = 0; i < n; i++)
+        x[i] = 0.5f * sinf((float)(2.0 * M_PI * 1000.0 * (double)i / sr_in));
+    float *y;
+    size_t m;
+    fp_resample(x, n, sr_in, 8000, &y, &m);
+    double max_err = 0.0;
+    for (size_t i = 100; i + 100 < m; i++) {
+        double e = fabs(y[i] - 0.5 * sin(2.0 * M_PI * 1000.0 * (double)i / 8000));
+        if (e > max_err)
+            max_err = e;
+    }
+    printf("  44100 -> 8000 Hz, %zu -> %zu samples, max error vs ideal 1 kHz tone = %g\n", n, m, max_err);
+    check(m == 16000 && max_err < 2e-3, "1 kHz tone survives 44.1k -> 8k");
+    free(y);
+    fp_resample(x, n, sr_in, sr_in, &y, &m);
+    check(m == n && memcmp(x, y, n * sizeof *x) == 0, "same-rate resample is the identity");
+    free(y);
+    free(x);
+}
+
+static void test_io(void)
+{
+    printf("WAV and manifest I/O\n");
+    const size_t n = 4000;
+    float *x = malloc(n * sizeof *x);
+    for (size_t i = 0; i < n; i++)
+        x[i] = 0.9f * sinf((float)i * 0.05f);
+    const char *wav = "build/selftest_io.wav";
+    float *y;
+    size_t m;
+    int sr;
+    check(wav_write(wav, x, n, 8000) == 0 && wav_read(wav, &y, &m, &sr) == 0, "16-bit mono write then read");
+    double max_err = 0.0;
+    for (size_t i = 0; i < n && i < m; i++)
+        max_err = fmax(max_err, fabs(x[i] - y[i]));
+    check(m == n && sr == 8000 && max_err <= 1.0 / 32768.0, "round trip within one 16-bit step");
+    free(y);
+    free(x);
+
+    /* two frames of stereo float: (0.5, -0.1) and (1.0, 0.0) */
+    const uint8_t hdr[] = {'R', 'I', 'F', 'F', 60, 0, 0, 0, 'W', 'A', 'V', 'E', 'f', 'm', 't', ' ', 16, 0, 0, 0, 3, 0, 2, 0,
+                           0x40, 0x1F, 0, 0, 0, 0x7D, 0, 0, 8, 0, 32, 0, 'd', 'a', 't', 'a', 16, 0, 0, 0};
+    const float pcm[] = {0.5f, -0.1f, 1.0f, 0.0f};
+    FILE *f = fopen("build/selftest_f32.wav", "wb");
+    fwrite(hdr, 1, sizeof hdr, f);
+    fwrite(pcm, sizeof pcm[0], 4, f);
+    fclose(f);
+    check(wav_read("build/selftest_f32.wav", &y, &m, &sr) == 0 && m == 2 && fabsf(y[0] - 0.2f) < 1e-6f &&
+              fabsf(y[1] - 0.5f) < 1e-6f,
+          "32-bit float stereo downmixed to mono");
+    free(y);
+    float *z;
+    check(wav_read_at_rate("build/selftest_f32.wav", 4000, &z, &m) == 0 && m == 1, "wav_read_at_rate resamples 8 kHz to 4 kHz");
+    free(z);
+
+    f = fopen("build/selftest_manifest.tsv", "w");
+    fputs("id\tpath\tsplit\n3\taudio/a.wav\tindexed\n9\t/abs/b.wav\tholdout\n", f);
+    fclose(f);
+    manifest man;
+    check(manifest_read("build/selftest_manifest.tsv", &man) == 0 && man.n == 2, "manifest parses two rows");
+    check(man.n == 2 && man.rows[0].id == 3 && !man.rows[0].holdout && man.rows[1].holdout &&
+              !strcmp(man.rows[0].path, "build/audio/a.wav") && !strcmp(man.rows[1].path, "/abs/b.wav"),
+          "ids, splits and path resolution");
+    manifest_free(&man);
+}
+
 int main(void)
 {
     printf("== step 1.1: FFT and fingerprint ==\n");
@@ -425,6 +579,13 @@ int main(void)
     printf("\n== step 1.2: index backends, file format, matching ==\n");
     test_index_match();
     test_edge_cases();
+
+    printf("\n== step 1.3: channel simulation, resampler, I/O ==\n");
+    test_speaker();
+    test_noise_snr();
+    test_echo();
+    test_resample();
+    test_io();
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "ALL PASSED", failures, failures == 1 ? "" : "s");
     return failures ? 1 : 0;
