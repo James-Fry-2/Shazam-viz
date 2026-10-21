@@ -5,6 +5,8 @@
 
 #include "fft.h"
 #include "fingerprint.h"
+#include "index.h"
+#include "match.h"
 #include "rng.h"
 
 static int failures;
@@ -195,6 +197,223 @@ static void test_pairs(void)
     fp_fingerprinter_free(fpr);
 }
 
+#define SWEEP_SECONDS 15
+#define NUM_SWEEP_TRACKS 3
+
+/* Three voices whose frequency moves linearly towards a new random target every ~0.3 s. */
+static float *make_sweep_track(uint64_t seed, const fp_config *cfg, size_t *len)
+{
+    const size_t n = (size_t)cfg->sample_rate * SWEEP_SECONDS;
+    const size_t seg = (size_t)(0.3 * cfg->sample_rate);
+    float *x = calloc(n, sizeof *x);
+    fp_rng rng;
+    fp_rng_seed(&rng, seed);
+    for (int v = 0; v < 3; v++) {
+        double f = 200.0 + 3400.0 * fp_rng_f32(&rng);
+        double phase = 0.0;
+        for (size_t s = 0; s < n; s += seg) {
+            double target = 200.0 + 3400.0 * fp_rng_f32(&rng);
+            for (size_t i = s; i < s + seg && i < n; i++) {
+                double fi = f + (target - f) * (double)(i - s) / (double)seg;
+                phase += 2.0 * M_PI * fi / cfg->sample_rate;
+                x[i] += 0.3f * sinf((float)fmod(phase, 2.0 * M_PI));
+            }
+            f = target;
+        }
+    }
+    *len = n;
+    return x;
+}
+
+typedef struct {
+    fp_pair *pairs;
+    size_t np;
+    int frames;
+} fingerprinted;
+
+static fingerprinted fingerprint(fp_fingerprinter *fpr, const fp_config *cfg, const float *x, size_t n)
+{
+    fingerprinted r;
+    fp_analysis a;
+    fp_analyze(fpr, x, n, 0, &a);
+    fp_pairs_build(cfg, a.peaks, a.num_peaks, &r.pairs, &r.np);
+    r.frames = a.frames;
+    fp_analysis_free(&a);
+    return r;
+}
+
+static int votes_equal(const fp_votes *a, const fp_votes *b)
+{
+    return a->n == b->n && a->entries_scanned == b->entries_scanned && a->hashes_used == b->hashes_used &&
+           memcmp(a->v, b->v, a->n * sizeof *a->v) == 0;
+}
+
+static void print_result(const char *name, const fp_match_result *r)
+{
+    printf("  %-8s matched=%d track=%u offset=%d score=%u runner_up=%u hashes_used=%u scanned=%llu\n", name,
+           r->matched, r->track, r->offset, r->score, r->runner_up, r->hashes_used,
+           (unsigned long long)r->entries_scanned);
+    printf("           top = [t%u o%d s%u] [t%u o%d s%u] [t%u o%d s%u]\n", r->top[0].track, r->top[0].offset,
+           r->top[0].score, r->top[1].track, r->top[1].offset, r->top[1].score, r->top[2].track,
+           r->top[2].offset, r->top[2].score);
+}
+
+static void test_index_match(void)
+{
+    printf("index 3 sine-sweep tracks, query a non-aligned 5 s excerpt\n");
+    fp_config cfg = fp_config_default();
+    fp_fingerprinter *fpr = fp_fingerprinter_create(&cfg);
+    fp_index *idx[2] = {fp_index_create(FP_IMPL_NAIVE2003, &cfg), fp_index_create(FP_IMPL_MODERN, &cfg)};
+    float *tracks[NUM_SWEEP_TRACKS + 1];
+    size_t len = 0;
+
+    for (int t = 0; t < NUM_SWEEP_TRACKS + 1; t++) {
+        tracks[t] = make_sweep_track(1000 + (uint64_t)t, &cfg, &len);
+        if (t == NUM_SWEEP_TRACKS)
+            break;
+        fingerprinted f = fingerprint(fpr, &cfg, tracks[t], len);
+        printf("  track %d: frames=%d pairs=%zu\n", t, f.frames, f.np);
+        for (int k = 0; k < 2; k++)
+            fp_index_add(idx[k], (uint32_t)t, (uint32_t)f.frames, f.pairs, f.np);
+        fp_pairs_free(f.pairs);
+    }
+    for (int k = 0; k < 2; k++)
+        fp_index_finalize(idx[k]);
+    printf("  entries: naive=%zu modern=%zu; bytes: naive=%zu modern=%zu\n", fp_index_num_entries(idx[0]),
+           fp_index_num_entries(idx[1]), fp_index_bytes(idx[0]), fp_index_bytes(idx[1]));
+
+    const int true_track = 1;
+    const size_t start = (size_t)(3.3 * cfg.sample_rate) + 123;
+    const size_t clip_len = (size_t)5 * cfg.sample_rate;
+    fingerprinted q = fingerprint(fpr, &cfg, tracks[true_track] + start, clip_len);
+    const double true_offset = (double)start / cfg.hop_size;
+    printf("  query: track %d, start sample %zu, true offset %.2f frames, %zu query pairs\n", true_track, start,
+           true_offset, q.np);
+
+    fp_votes votes[2];
+    fp_match_result res[2];
+    for (int k = 0; k < 2; k++) {
+        fp_index_query(idx[k], q.pairs, q.np, &votes[k]);
+        fp_match_decide(&cfg, &votes[k], &res[k]);
+    }
+    print_result("naive", &res[0]);
+    print_result("modern", &res[1]);
+
+    for (int k = 0; k < 2; k++) {
+        check(res[k].matched && (int)res[k].track == true_track, k ? "modern picks the right track" : "naive picks the right track");
+        check(fabs((double)res[k].offset - true_offset) <= 1.5, k ? "modern offset within 1.5 frames of truth" : "naive offset within 1.5 frames of truth");
+    }
+    check(votes_equal(&votes[0], &votes[1]), "raw vote arrays identical (n, counts, scanned, hashes_used)");
+    check(fp_match_equal(&res[0], &res[1]), "match results identical field by field");
+
+    fingerprinted other = fingerprint(fpr, &cfg, tracks[NUM_SWEEP_TRACKS] + start, clip_len);
+    fp_votes ov[2];
+    fp_match_result orr[2];
+    for (int k = 0; k < 2; k++) {
+        fp_index_query(idx[k], other.pairs, other.np, &ov[k]);
+        fp_match_decide(&cfg, &ov[k], &orr[k]);
+    }
+    printf("  holdout query (track not in index): naive score=%u matched=%d, modern score=%u matched=%d\n",
+           orr[0].score, orr[0].matched, orr[1].score, orr[1].matched);
+    check(!orr[0].matched && !orr[1].matched, "unindexed track reports no match");
+    check(fp_match_equal(&orr[0], &orr[1]), "holdout results identical across backends");
+
+    const char *path = "build/selftest_index.bin";
+    check(fp_index_save(idx[0], path) == 0, "save index.bin from naive backend");
+    for (int k = 0; k < 2; k++) {
+        fp_index *loaded = NULL;
+        int rc = fp_index_load(&loaded, k ? FP_IMPL_MODERN : FP_IMPL_NAIVE2003, &cfg, path);
+        fp_votes lv = {0};
+        fp_match_result lr = {0};
+        if (rc == 0) {
+            fp_index_query(loaded, q.pairs, q.np, &lv);
+            fp_match_decide(&cfg, &lv, &lr);
+        }
+        check(rc == 0 && fp_match_equal(&lr, &res[0]), k ? "load into modern reproduces result" : "load into naive reproduces result");
+        fp_votes_free(&lv);
+        fp_index_free(loaded);
+    }
+    fp_config other_cfg = cfg;
+    other_cfg.threshold = 3.0f;
+    fp_index *refused = NULL;
+    check(fp_index_load(&refused, FP_IMPL_MODERN, &other_cfg, path) == -2 && !refused, "load refuses a config mismatch");
+    other_cfg = cfg;
+    other_cfg.min_score = 99;
+    check(fp_index_load(&refused, FP_IMPL_MODERN, &other_cfg, path) == 0, "scoring-only config change is accepted");
+    fp_index_free(refused);
+
+    for (int k = 0; k < 2; k++) {
+        fp_votes_free(&votes[k]);
+        fp_votes_free(&ov[k]);
+        fp_index_free(idx[k]);
+    }
+    fp_pairs_free(q.pairs);
+    fp_pairs_free(other.pairs);
+    for (int t = 0; t < NUM_SWEEP_TRACKS + 1; t++)
+        free(tracks[t]);
+    fp_fingerprinter_free(fpr);
+}
+
+static fp_pair mkpair(uint32_t hash, int t)
+{
+    fp_pair p = {hash, t, 0, 0};
+    return p;
+}
+
+static void test_edge_cases(void)
+{
+    printf("negative offsets, bucket collisions and ties on hand-built pairs\n");
+    fp_config cfg = fp_config_default();
+    cfg.offset_bin = 2;
+    cfg.min_score = 1;
+    fp_index *idx[2] = {fp_index_create(FP_IMPL_NAIVE2003, &cfg), fp_index_create(FP_IMPL_MODERN, &cfg)};
+
+    /* H and H + 2^20 share a naive bucket but are different hashes. */
+    const uint32_t h = 0x012345;
+    const uint32_t collide = h + (1u << 20);
+    const fp_pair t7[] = {mkpair(h, 5), mkpair(h, 9)};
+    const fp_pair t3[] = {mkpair(collide, 5), mkpair(h, 5)};
+    for (int k = 0; k < 2; k++) {
+        fp_index_add(idx[k], 7, 100, t7, 2);
+        fp_index_add(idx[k], 3, 100, t3, 2);
+        fp_index_finalize(idx[k]);
+    }
+
+    /* Query at t=8: offsets 5-8=-3 -> bin -2; 9-8=1 -> bin 0. Floor, not truncation. */
+    const fp_pair q[] = {mkpair(h, 8)};
+    fp_votes v[2];
+    fp_match_result r[2];
+    for (int k = 0; k < 2; k++) {
+        fp_index_query(idx[k], q, 1, &v[k]);
+        fp_match_decide(&cfg, &v[k], &r[k]);
+    }
+    printf("  votes (track,bin,count):");
+    for (size_t i = 0; i < v[0].n; i++)
+        printf(" (%u,%d,%u)", v[0].v[i].track, v[0].v[i].bin, v[0].v[i].count);
+    printf("  scanned=%llu\n", (unsigned long long)v[0].entries_scanned);
+    check(v[0].n == 3 && v[0].v[0].track == 3 && v[0].v[0].bin == -2 && v[0].v[1].track == 7 &&
+              v[0].v[1].bin == -2 && v[0].v[2].track == 7 && v[0].v[2].bin == 0,
+          "floor division places offset -3 in bin -2 and keeps tracks separate");
+    check(v[0].entries_scanned == 3, "colliding bucket entry with a different hash is not counted");
+    check(votes_equal(&v[0], &v[1]), "backends agree on these votes");
+    check(r[0].track == 3 && r[0].offset == -4 && r[0].score == 1, "tie on score resolves to the lowest track id");
+    check(r[0].top[1].track == 7 && r[0].runner_up == 1 && !r[0].matched,
+          "runner-up counted, and score 1 vs runner-up 1 fails the ratio test");
+    check(fp_match_equal(&r[0], &r[1]), "match results identical");
+
+    fp_votes empty;
+    fp_match_result er;
+    fp_index_query(idx[1], NULL, 0, &empty);
+    fp_match_decide(&cfg, &empty, &er);
+    check(!er.matched && er.track == FP_NO_TRACK && er.top[0].track == FP_NO_TRACK, "empty query gives no match");
+
+    fp_votes_free(&empty);
+    for (int k = 0; k < 2; k++) {
+        fp_votes_free(&v[k]);
+        fp_index_free(idx[k]);
+    }
+}
+
 int main(void)
 {
     printf("== step 1.1: FFT and fingerprint ==\n");
@@ -202,6 +421,10 @@ int main(void)
     test_sine_peak();
     test_hash_roundtrip();
     test_pairs();
+
+    printf("\n== step 1.2: index backends, file format, matching ==\n");
+    test_index_match();
+    test_edge_cases();
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "ALL PASSED", failures, failures == 1 ? "" : "s");
     return failures ? 1 : 0;
