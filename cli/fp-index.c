@@ -6,6 +6,7 @@
 
 #include "config_args.h"
 #include "fingerprint.h"
+#include "hash_stats.h"
 #include "index.h"
 #include "manifest.h"
 #include "wav.h"
@@ -95,6 +96,10 @@ int main(int argc, char **argv)
     printf("peaks/s:     %.1f\n", seconds > 0 ? (double)peaks / seconds : 0.0);
     printf("bytes:       %lld (file), %zu (in memory)\n", (long long)st.st_size, fp_index_bytes(idx));
     printf("time:        %.2f s\n", (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) * 1e-9);
+
+    fp_hash_stats hs;
+    if (fp_index_hash_stats(idx, &hs) == 0)
+        hash_stats_print(stdout, &hs);
 
     fp_index_free(idx);
     fp_fingerprinter_free(fpr);

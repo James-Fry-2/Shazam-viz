@@ -35,7 +35,7 @@ build/libcli.a: $(CLI_OBJ)
 
 build/%: cli/%.c build/libcli.a build/libfp.a $(wildcard cli/*.h)
 	mkdir -p build
-	$(CC) $(BASE) $(OPT) $< build/libcli.a build/libfp.a -lm -o $@
+	$(CC) $(BASE) $(OPT) $< build/libcli.a build/libfp.a -lm -lpthread -o $@
 
 build/synth: data/synth.c build/libcli.a build/libfp.a $(wildcard cli/*.h)
 	mkdir -p build

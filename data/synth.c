@@ -13,6 +13,8 @@
 #define MAX_PARTIALS 12
 #define MAX_STEPS 128
 #define NO_NOTE (-1000)
+#define DETUNE_TRACK_CENTS 30.0
+#define DETUNE_VOICE_CENTS 5.0
 
 typedef struct {
     int partials;
@@ -20,6 +22,7 @@ typedef struct {
     int odd_only;
     double attack, decay, sustain, release;
     double vibrato_hz, vibrato_depth;
+    double tune;
 } timbre;
 
 typedef struct {
@@ -62,7 +65,7 @@ static void add_note(song *s, const timbre *t, double start, double held, double
     for (size_t k = 0; k < len && i0 + k < s->n; k++) {
         const double age = (double)k / SR;
         const double env = adsr(t, age, held);
-        const double f = hz * (1.0 + t->vibrato_depth * sin(2 * M_PI * t->vibrato_hz * age));
+        const double f = hz * t->tune * (1.0 + t->vibrato_depth * sin(2 * M_PI * t->vibrato_hz * age));
         phase += 2 * M_PI * f / SR;
         double v = 0.0;
         for (int c = 0; c < t->partials; c++) {
@@ -75,24 +78,24 @@ static void add_note(song *s, const timbre *t, double start, double held, double
     }
 }
 
-static void add_kick(song *s, double start, double amp)
+static void add_kick(song *s, double start, double amp, double tune)
 {
     const size_t i0 = (size_t)(start * SR);
     double phase = 0.0;
     for (size_t k = 0; k < (size_t)(0.25 * SR) && i0 + k < s->n; k++) {
         const double age = (double)k / SR;
-        phase += 2 * M_PI * (50.0 + 110.0 * exp(-age * 30.0)) / SR;
+        phase += 2 * M_PI * tune * (50.0 + 110.0 * exp(-age * 30.0)) / SR;
         s->buf[i0 + k] += (float)(amp * exp(-age * 14.0) * sin(phase));
     }
 }
 
-static void add_snare(song *s, double start, double amp)
+static void add_snare(song *s, double start, double amp, double tune)
 {
     const size_t i0 = (size_t)(start * SR);
     for (size_t k = 0; k < (size_t)(0.2 * SR) && i0 + k < s->n; k++) {
         const double age = (double)k / SR;
         const double noise = 2.0 * fp_rng_f32(&s->rng) - 1.0;
-        const double body = sin(2 * M_PI * 190.0 * age);
+        const double body = sin(2 * M_PI * tune * 190.0 * age);
         s->buf[i0 + k] += (float)(amp * exp(-age * 22.0) * (0.8 * noise + 0.4 * body));
     }
 }
@@ -139,6 +142,7 @@ static timbre random_timbre(fp_rng *r, int pad)
     t.release = pad ? rnd(r, 0.15, 0.4) : rnd(r, 0.04, 0.15);
     t.vibrato_hz = rnd(r, 4.5, 6.5);
     t.vibrato_depth = pad ? 0.0 : rnd(r, 0.0, 0.004);
+    t.tune = 1.0;
     return t;
 }
 
@@ -172,8 +176,9 @@ static void make_melody(fp_rng *r, melody *m, int steps, int steps_per_chord, co
 
 int main(int argc, char **argv)
 {
-    if (argc != 3) {
-        fprintf(stderr, "usage: %s <seed> <out.wav>\n", argv[0]);
+    const int detune = argc == 4 && !strcmp(argv[3], "--detune");
+    if (argc != 3 && !detune) {
+        fprintf(stderr, "usage: %s <seed> <out.wav> [--detune]\n", argv[0]);
         return 2;
     }
     song s;
@@ -209,6 +214,18 @@ int main(int argc, char **argv)
     const int use_arp = rint_in(r, 0, 1);
     timbre arp = random_timbre(r, 0);
 
+    /* A separate stream keeps tracks without --detune bit-identical to the 12-TET originals. */
+    double drum_tune = 1.0;
+    if (detune) {
+        fp_rng tr;
+        fp_rng_seed(&tr, strtoull(argv[1], NULL, 10) ^ 0xD37E5EEDULL);
+        const double track = rnd(&tr, -DETUNE_TRACK_CENTS, DETUNE_TRACK_CENTS);
+        timbre *voices[4] = {&lead, &pad, &bass, &arp};
+        for (int v = 0; v < 4; v++)
+            voices[v]->tune = pow(2.0, (track + rnd(&tr, -DETUNE_VOICE_CENTS, DETUNE_VOICE_CENTS)) / 1200.0);
+        drum_tune = pow(2.0, track / 1200.0);
+    }
+
     melody verse, chorus;
     make_melody(r, &verse, steps, steps_per_chord, prog, 7);
     make_melody(r, &chorus, steps, steps_per_chord, prog, 11);
@@ -240,11 +257,11 @@ int main(int argc, char **argv)
         }
 
         if (b % 2 == 0)
-            add_kick(&s, t0, 0.55);
+            add_kick(&s, t0, 0.55, drum_tune);
         else
-            add_snare(&s, t0, 0.30);
+            add_snare(&s, t0, 0.30, drum_tune);
         if (is_chorus && b % 4 == 3)
-            add_kick(&s, t0 + beat * 0.5, 0.40);
+            add_kick(&s, t0 + beat * 0.5, 0.40, drum_tune);
         add_hat(&s, t0, 0.18);
         add_hat(&s, t0 + beat * 0.5, is_chorus ? 0.15 : 0.08);
         if (is_chorus) {

@@ -5,7 +5,7 @@
 #include "index_internal.h"
 
 #define MAGIC "WFP1"
-#define VERSION 1u
+#define VERSION 2u
 #define CFG_FIELDS 12
 
 static void put32(uint8_t *p, uint32_t v)
@@ -49,7 +49,7 @@ static void config_snapshot(const fp_config *c, uint32_t out[CFG_FIELDS])
     out[4] = f32_bits(c->band_lo_hz);
     out[5] = f32_bits(c->band_hi_hz);
     out[6] = f32_bits(c->threshold);
-    out[7] = f32_bits(c->min_magnitude);
+    out[7] = f32_bits(c->min_magnitude_db);
     out[8] = (uint32_t)c->fan_out;
     out[9] = (uint32_t)c->min_dt;
     out[10] = (uint32_t)c->max_dt;

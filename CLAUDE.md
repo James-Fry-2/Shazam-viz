@@ -21,7 +21,8 @@ The step-by-step build plan, with the recommended model for each step, is in
 - `data/make_synthetic.sh`: writes 200 indexed + 50 holdout tracks plus `data/tracks.tsv` and `data/tracks.json`.
 - `build/fp-index data/tracks.tsv -o build/index.bin`
 - `build/fp-query build/index.bin clip.wav --impl both`: runs both backends and asserts identical results.
-- `build/fp-accuracy ...`: writes `docs/results/accuracy_*.csv`.
+- `build/fp-accuracy data/tracks.tsv --out x.csv [--detail y.csv]`: seeded accuracy grid; both backends on every query, aborts if they differ.
+- `bench/accuracy_phase1.sh [grid|detune|sweep]`: regenerates `docs/results/accuracy_phase1*.{csv,txt}` and `sweep_phase1.{csv,txt}`.
 
 ## Environment
 - macOS, Apple M4 Pro, Apple clang 17, make, git.
@@ -31,7 +32,7 @@ The step-by-step build plan, with the recommended model for each step, is in
 ## Algorithm invariants (do not change without updating docs/parameters.md)
 - Every tunable lives in `fp_config` (`core/fp_config.h`). No magic numbers elsewhere.
 - 8000 Hz mono, Hann 1024, hop 512. Bins 1..511 only, so `f` fits in 9 bits.
-- The spectrogram is stored as `log1p(|X|)` for display. The peak test is in **linear** magnitude: `|X_peak| > threshold × mean|X|` over the band in that frame, plus `min_magnitude`. 6 log-spaced bands, 100 Hz to 4000 Hz.
+- The spectrogram is stored as `log1p(|X|)` for display. The peak test is in **linear** magnitude: `|X_peak| > threshold × mean|X|` over the band in that frame, plus an absolute floor `min_magnitude_db` (dB relative to a full-scale sine, |X| = window_size/4). 6 log-spaced bands, 100 Hz to 4000 Hz.
 - Pairs: the next `fan_out` peaks with `min_dt ≤ dt ≤ max_dt` and `|df| ≤ max_df`, with peaks sorted by (t, f).
 - Hash: `f1<<15 | f2<<6 | dt` (24 bits). Packed entry: `hash:24 | track:21 | time:19` as a uint64.
 - Scoring: `offset = tDb − tQuery`, bin = `floor(offset / offset_bin)`. Per-track best bin, ties to the lowest offset. Rank by score desc, then track id asc. Runner-up = best score of a different track. Match iff `score ≥ min_score && score ≥ min_ratio × runner_up`.

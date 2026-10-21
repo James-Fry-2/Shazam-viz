@@ -13,6 +13,7 @@ struct fp_fingerprinter {
     float *re;
     float *im;
     float *mag;
+    float min_mag;
     int band_lo[FP_MAX_BANDS];
     int band_hi[FP_MAX_BANDS];
 };
@@ -95,6 +96,7 @@ fp_fingerprinter *fp_fingerprinter_create(const fp_config *c)
     /* Periodic Hann: exact overlap-add at 50% hop. */
     for (int i = 0; i < n; i++)
         f->window[i] = (float)(0.5 - 0.5 * cos(2.0 * M_PI * i / n));
+    f->min_mag = (float)(n / 4.0 * pow(10.0, c->min_magnitude_db / 20.0));
     compute_bands(f);
     return f;
 }
@@ -168,7 +170,7 @@ int fp_analyze(fp_fingerprinter *f, const float *x, size_t n, int keep_spec, fp_
             }
             const float mean = (float)(sum / (hi - lo + 1));
             const float m = f->mag[best];
-            if (!(m > c->threshold * mean && m > c->min_magnitude))
+            if (!(m > c->threshold * mean && m > f->min_mag))
                 continue;
 
             if (np == cap) {

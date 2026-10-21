@@ -25,6 +25,21 @@ repeat inside a track and give realistic offset ambiguity. Voices are a lead, a
 pad and a bass (sums of partials under an ADSR envelope), an optional chorus
 arpeggio, and kick, snare and hat noise bursts.
 
+### Detuned variant (switchable, off by default)
+
+```bash
+DETUNE=1 data/make_synthetic.sh
+```
+
+Writes the same 250 tracks to `data/audio-detune/` with `data/tracks-detune.tsv`
+and `data/tracks-detune.json` (`build/synth <seed> <out.wav> --detune`). Each
+track gets a global tuning offset, uniform in ±30 cents (roughly A = 430–450 Hz),
+applied to every voice and the drums, plus an independent ±5 cents per pitched
+voice. The offsets come from a separate RNG stream, so the default tracks stay
+byte-identical. Without it every track shares one A440 12-TET grid with
+perfectly stable partials, which inflates cross-track hash collisions; see
+`docs/progress.md` (step 1.6) for the measured effect.
+
 ## Real music (FMA), planned for step 2.1
 
 `data/fetch_fma.sh` will download `fma_metadata.zip` and `fma_small.zip` from the

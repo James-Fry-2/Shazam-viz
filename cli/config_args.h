@@ -20,7 +20,7 @@ static inline int config_arg(fp_config *c, int argc, char **argv, int *i)
     } opts[] = {
         {"--bands", 0, offsetof(fp_config, num_bands)},
         {"--threshold", 1, offsetof(fp_config, threshold)},
-        {"--min-magnitude", 1, offsetof(fp_config, min_magnitude)},
+        {"--min-magnitude-db", 1, offsetof(fp_config, min_magnitude_db)},
         {"--fan-out", 0, offsetof(fp_config, fan_out)},
         {"--min-dt", 0, offsetof(fp_config, min_dt)},
         {"--max-dt", 0, offsetof(fp_config, max_dt)},
@@ -45,7 +45,7 @@ static inline int config_arg(fp_config *c, int argc, char **argv, int *i)
 }
 
 #define CONFIG_ARGS_USAGE \
-    "  config: --bands n --threshold x --min-magnitude x --fan-out n --min-dt n --max-dt n --max-df n\n" \
+    "  config: --bands n --threshold x --min-magnitude-db x --fan-out n --min-dt n --max-dt n --max-df n\n" \
     "          --min-score n --min-ratio x   (an index and its queries must share the fingerprint fields)\n"
 
 #endif

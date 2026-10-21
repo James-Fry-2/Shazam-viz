@@ -14,7 +14,8 @@ typedef struct {
     float band_lo_hz;
     float band_hi_hz;
     float threshold;
-    float min_magnitude;
+    /* dB relative to the |X| of a full-scale sine under the Hann window (window_size / 4) */
+    float min_magnitude_db;
 
     int fan_out;
     int min_dt;
@@ -36,11 +37,11 @@ static inline fp_config fp_config_default(void)
     c.num_bands = 6;
     c.band_lo_hz = 100.0f;
     c.band_hi_hz = 4000.0f;
-    c.threshold = 4.0f;
-    c.min_magnitude = 1e-3f;
+    c.threshold = 6.0f;
+    c.min_magnitude_db = -80.0f;
 
     c.fan_out = 5;
-    c.min_dt = 1;
+    c.min_dt = 5;
     c.max_dt = 63;
     c.max_df = 128;
 

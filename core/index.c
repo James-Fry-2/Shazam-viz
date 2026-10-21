@@ -105,3 +105,38 @@ void fp_votes_free(fp_votes *v)
     free(v->v);
     memset(v, 0, sizeof *v);
 }
+
+int fp_index_hash_stats(const fp_index *idx, fp_hash_stats *out)
+{
+    memset(out, 0, sizeof *out);
+    const size_t n = fp_index_num_entries(idx);
+    uint64_t *e = malloc((n ? n : 1) * sizeof *e);
+    if (!e || idx->vt->export_sorted(idx->self, e) != 0) {
+        free(e);
+        return -1;
+    }
+    double sum_sq = 0.0;
+    size_t i = 0;
+    while (i < n) {
+        const uint64_t h = e[i] >> 40;
+        size_t j = i + 1;
+        while (j < n && e[j] >> 40 == h)
+            j++;
+        const size_t len = j - i;
+        int f1, f2, dt;
+        fp_hash_unpack((uint32_t)h, &f1, &f2, &dt);
+        out->distinct++;
+        if (len > out->max_list)
+            out->max_list = len;
+        sum_sq += (double)len * (double)len;
+        out->dt_hist[dt] += len;
+        if (f1 == f2)
+            out->same_f += len;
+        i = j;
+    }
+    out->entries = n;
+    out->mean_list = out->distinct ? (double)n / (double)out->distinct : 0.0;
+    out->weighted_list = n ? sum_sq / (double)n : 0.0;
+    free(e);
+    return 0;
+}

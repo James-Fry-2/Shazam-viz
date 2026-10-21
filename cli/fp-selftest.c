@@ -58,7 +58,7 @@ static void test_sine_peak(void)
     const size_t n = (size_t)cfg.sample_rate * 5;
     float *x = malloc(n * sizeof *x);
     for (size_t i = 0; i < n; i++)
-        x[i] = 0.8f * sinf((float)(2.0 * M_PI * 1000.0 * (double)i / cfg.sample_rate));
+        x[i] = (float)(0.8 * sin(2.0 * M_PI * 1000.0 * (double)i / cfg.sample_rate));
 
     fp_analysis a;
     fp_analyze(fpr, x, n, 1, &a);
@@ -88,8 +88,9 @@ static void test_sine_peak(void)
     }
     printf("  frames with a peak in [127,129]: %d / %d, observed bins %d..%d\n", frames_ok, a.frames, min_bin,
            max_bin);
-    printf("  other-band peaks (sidelobe leakage above min_magnitude): %d\n", off_target);
+    printf("  other-band peaks (sidelobe leakage above min_magnitude_db): %d\n", off_target);
     check(frames_ok == a.frames, "every frame has a peak at bin 128 +/- 1");
+    check(off_target == 0, "no peaks outside bin 128 +/- 1");
 
     int col = 0;
     float best = 0.0f;
@@ -102,6 +103,28 @@ static void test_sine_peak(void)
     }
     check(col == 128, "stored log1p spectrogram column also peaks at bin 128");
 
+    fp_analysis_free(&a);
+    free(x);
+    fp_fingerprinter_free(fpr);
+}
+
+/* Phase is computed in double: float phase error at large arguments alone puts broadband noise near -72 dB. */
+static void test_offbin_leakage(void)
+{
+    printf("off-bin 1003.7 Hz sine: Hann sidelobes stay below min_magnitude_db\n");
+    fp_config cfg = fp_config_default();
+    fp_fingerprinter *fpr = fp_fingerprinter_create(&cfg);
+    const size_t n = (size_t)cfg.sample_rate * 5;
+    float *x = malloc(n * sizeof *x);
+    for (size_t i = 0; i < n; i++)
+        x[i] = (float)(0.8 * sin(2.0 * M_PI * 1003.7 * (double)i / cfg.sample_rate));
+    fp_analysis a;
+    fp_analyze(fpr, x, n, 0, &a);
+    int off_target = 0;
+    for (size_t k = 0; k < a.num_peaks; k++)
+        off_target += abs(a.peaks[k].f - 128) > 1;
+    printf("  min_magnitude_db %.0f: %d off-target peaks in %d frames\n", cfg.min_magnitude_db, off_target, a.frames);
+    check(off_target == 0, "no sidelobe peaks in other bands");
     fp_analysis_free(&a);
     free(x);
     fp_fingerprinter_free(fpr);
@@ -573,6 +596,7 @@ int main(void)
     printf("== step 1.1: FFT and fingerprint ==\n");
     test_fft_impulse();
     test_sine_peak();
+    test_offbin_leakage();
     test_hash_roundtrip();
     test_pairs();
 
