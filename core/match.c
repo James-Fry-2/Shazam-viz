@@ -26,17 +26,30 @@ void fp_match_decide(const fp_config *cfg, const fp_votes *votes, fp_match_resul
     out->hashes_used = votes->hashes_used;
     out->entries_scanned = votes->entries_scanned;
 
-    /* Votes arrive sorted by (track, bin), so a strict > keeps the lowest offset on ties and
-     * tracks are visited in ascending id, which makes insert_top break score ties by track id. */
+    /* Votes arrive sorted by (track, bin), so adjacent bins are neighbours in the array when both are present.
+     * A window starting at an absent bin never beats the one starting at its present neighbour. Windows are
+     * visited in ascending order and only a strict > replaces the best, so ties keep the lowest offset; the
+     * reported bin is non-decreasing in the window start. Tracks are visited in ascending id, which makes
+     * insert_top break score ties by track id. */
     size_t i = 0;
     while (i < votes->n) {
         const uint32_t track = votes->v[i].track;
-        fp_candidate best = {track, votes->v[i].bin * cfg->offset_bin, votes->v[i].count};
-        for (i++; i < votes->n && votes->v[i].track == track; i++)
-            if (votes->v[i].count > best.score) {
-                best.score = votes->v[i].count;
-                best.offset = votes->v[i].bin * cfg->offset_bin;
+        fp_candidate best = {track, 0, 0};
+        for (; i < votes->n && votes->v[i].track == track; i++) {
+            const fp_vote *v = &votes->v[i];
+            uint32_t score = v->count;
+            int32_t bin = v->bin;
+            if (cfg->score_window == 2 && i + 1 < votes->n && votes->v[i + 1].track == track &&
+                (int64_t)votes->v[i + 1].bin - v->bin == 1) {
+                score += votes->v[i + 1].count;
+                if (votes->v[i + 1].count > v->count)
+                    bin = votes->v[i + 1].bin;
             }
+            if (score > best.score) {
+                best.score = score;
+                best.offset = bin * cfg->offset_bin;
+            }
+        }
         insert_top(out->top, best);
     }
 

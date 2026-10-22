@@ -367,6 +367,10 @@ static void test_index_match(void)
     other_cfg.min_score = 99;
     check(fp_index_load(&refused, FP_IMPL_MODERN, &other_cfg, path) == 0, "scoring-only config change is accepted");
     fp_index_free(refused);
+    other_cfg = cfg;
+    other_cfg.score_window = 3 - cfg.score_window;
+    check(fp_index_load(&refused, FP_IMPL_MODERN, &other_cfg, path) == 0, "score_window change is accepted without a re-index");
+    fp_index_free(refused);
 
     for (int k = 0; k < 2; k++) {
         fp_votes_free(&votes[k]);
@@ -438,6 +442,74 @@ static void test_edge_cases(void)
         fp_votes_free(&v[k]);
         fp_index_free(idx[k]);
     }
+}
+
+static fp_match_result decide_votes(int window, int offset_bin, const fp_vote *v, size_t n)
+{
+    fp_config cfg = fp_config_default();
+    cfg.score_window = window;
+    cfg.offset_bin = offset_bin;
+    cfg.min_score = 1;
+    fp_votes votes = {(fp_vote *)v, n, 0, 0};
+    fp_match_result r;
+    fp_match_decide(&cfg, &votes, &r);
+    return r;
+}
+
+static void test_score_window(void)
+{
+    printf("two-bin offset scoring on hand-built votes\n");
+    fp_match_result r;
+
+    const fp_vote split[] = {{0, 10, 3}, {0, 11, 3}, {0, 40, 5}};
+    r = decide_votes(1, 1, split, 3);
+    check(r.score == 5 && r.offset == 40, "window 1: a single 5-vote bin beats 3 + 3 split across adjacent bins");
+    r = decide_votes(2, 1, split, 3);
+    check(r.score == 6 && r.offset == 10, "window 2: 3 + 3 in adjacent bins beats 5 in one bin, equal halves report the lower bin");
+
+    const fp_vote larger[] = {{0, 7, 2}, {0, 8, 4}};
+    r = decide_votes(2, 1, larger, 2);
+    check(r.score == 6 && r.offset == 8, "reported bin is the one with more votes");
+    r = decide_votes(2, 3, larger, 2);
+    check(r.offset == 24, "reported offset scales with offset_bin");
+
+    const fp_vote apart[] = {{0, 10, 3}, {0, 12, 3}};
+    r = decide_votes(2, 1, apart, 2);
+    check(r.score == 3 && r.offset == 10, "bins two apart do not sum, and the lower wins the tie");
+    const fp_vote gap[] = {{0, 4, 2}, {0, 6, 2}, {0, 9, 2}};
+    r = decide_votes(2, 1, gap, 3);
+    check(r.score == 2, "neighbours in the array but not in bin value do not sum");
+
+    const fp_vote neg[] = {{0, -3, 1}, {0, -1, 3}, {0, 0, 2}};
+    r = decide_votes(2, 1, neg, 3);
+    check(r.score == 5 && r.offset == -1, "adjacent bins straddling zero sum and report the larger bin (-1)");
+    const fp_vote neg2[] = {{0, -3, 4}, {0, -2, 4}};
+    r = decide_votes(2, 1, neg2, 2);
+    check(r.score == 8 && r.offset == -3, "negative bins -3 and -2 sum, tie reports -3");
+
+    const fp_vote run[] = {{0, 0, 3}, {0, 1, 3}, {0, 2, 3}};
+    r = decide_votes(2, 1, run, 3);
+    check(r.score == 6 && r.offset == 0, "equal windows in one track keep the lowest offset");
+
+    const fp_vote two_tracks[] = {{2, 5, 3}, {2, 6, 3}, {5, 1, 6}, {9, 0, 6}};
+    r = decide_votes(2, 1, two_tracks, 4);
+    check(r.track == 2 && r.top[1].track == 5 && r.top[2].track == 9 && r.top[0].score == 6 &&
+              r.top[1].score == 6 && r.top[2].score == 6,
+          "equal windowed scores rank by track id and fill top[3]");
+
+    const fp_vote ru[] = {{1, 0, 4}, {1, 1, 3}, {2, 8, 6}};
+    r = decide_votes(1, 1, ru, 3);
+    check(r.track == 2 && r.score == 6 && r.runner_up == 4, "window 1: runner-up is the best single bin of another track");
+    r = decide_votes(2, 1, ru, 3);
+    check(r.track == 1 && r.score == 7 && r.runner_up == 6 && r.top[1].track == 2,
+          "window 2: runner-up and top[3] use windowed scores");
+
+    const fp_vote same[] = {{3, 5, 4}, {3, 6, 1}, {3, 20, 5}};
+    r = decide_votes(2, 1, same, 3);
+    check(r.score == 5 && r.offset == 5 && r.runner_up == 0, "a track's own other windows are never the runner-up (5 at bin 5 ties 5 at bin 20, lower wins)");
+
+    fp_match_result a = decide_votes(1, 1, split, 3), b = decide_votes(1, 1, split, 3);
+    check(fp_match_equal(&a, &b), "window 1 is deterministic");
 }
 
 static double tone_gain_db(double hz, float amp, int sat)
@@ -603,6 +675,7 @@ int main(void)
     printf("\n== step 1.2: index backends, file format, matching ==\n");
     test_index_match();
     test_edge_cases();
+    test_score_window();
 
     printf("\n== step 1.3: channel simulation, resampler, I/O ==\n");
     test_speaker();

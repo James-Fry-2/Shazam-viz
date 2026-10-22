@@ -1,10 +1,10 @@
-config: threshold 16, min_magnitude_db -80, fan_out 5, min_dt 5, max_dt 63, max_df 128
+config: threshold 16, min_magnitude_db -80, fan_out 5, min_dt 5, max_dt 63, max_df 128, score_window 1
 index: 200 tracks, 402089 entries, 13.8 peaks/s
 distinct hashes: 55593
 posting list:    mean 7.2, entry-weighted 123.7, max 1224
 f1 == f2:        19.8%
 dt histogram:    1:0.0% 2:0.0% 3:0.0% 4:0.0% 5:14.2% 6-10:53.9% 11-20:25.4% 21-63:6.5%  (dt<=3: 0.0%)
-10800 queries x 2 backends (all agree) in 3.5 s on 12 threads
+10800 queries x 2 backends (all agree) in 3.7 s on 12 threads
 
 len   channel         snr | recall  track wrongT holdFP |  pSurv  hSurv pSurv2   both  vratio |   pk/s  hashes     scan/q   scan/q50
 3     clean           inf |  0.750  0.880  0.000  0.000 |  1.000  1.000  1.000  1.000    3.67 |   13.5     156      22789      16492
@@ -83,13 +83,13 @@ NON-MONOTONIC: len 10 speaker: recall 0.920 at 30 dB > 0.910 at inf dB
 10    speaker+echo      5 |  0.050  0.060  0.000  0.020 |  0.079  0.013  0.006  0.013    0.42 |    1.2      33       4006        494
 10    speaker+echo      0 |  0.010  0.010  0.000  0.000 |  0.017  0.002  0.000  0.002    0.00 |    0.2       4        406          0
 monotonicity violations: 3
-config: threshold 10, min_magnitude_db -80, fan_out 5, min_dt 5, max_dt 63, max_df 128
+config: threshold 10, min_magnitude_db -80, fan_out 5, min_dt 5, max_dt 63, max_df 128, score_window 1
 index: 200 tracks, 983178 entries, 33.3 peaks/s
 distinct hashes: 53518
 posting list:    mean 18.4, entry-weighted 413.1, max 3706
 f1 == f2:        16.6%
 dt histogram:    1:0.0% 2:0.0% 3:0.0% 4:0.0% 5:27.5% 6-10:66.5% 11-20:5.5% 21-63:0.4%  (dt<=3: 0.0%)
-10800 queries x 2 backends (all agree) in 26.6 s on 12 threads
+10800 queries x 2 backends (all agree) in 29.5 s on 12 threads
 
 len   channel         snr | recall  track wrongT holdFP |  pSurv  hSurv pSurv2   both  vratio |   pk/s  hashes     scan/q   scan/q50
 3     clean           inf |  0.880  0.970  0.000  0.000 |  1.000  1.000  1.000  1.000    4.23 |   32.6     414     178018     160886
@@ -173,13 +173,13 @@ NON-MONOTONIC: len 10 echo: recall 0.880 at 30 dB > 0.850 at inf dB
 10    speaker+echo      0 |  0.140  0.150  0.000  0.000 |  0.106  0.016  0.011  0.016    1.11 |    3.9     153      41728      21631
 NON-MONOTONIC: len 10 speaker+echo: recall 0.870 at 20 dB > 0.850 at 30 dB
 monotonicity violations: 8
-config: threshold 6, min_magnitude_db -80, fan_out 5, min_dt 5, max_dt 63, max_df 128
+config: threshold 6, min_magnitude_db -80, fan_out 5, min_dt 5, max_dt 63, max_df 128, score_window 1
 index: 200 tracks, 1796338 entries, 60.6 peaks/s
 distinct hashes: 50294
 posting list:    mean 35.7, entry-weighted 692.3, max 5398
 f1 == f2:        13.6%
 dt histogram:    1:0.0% 2:0.0% 3:0.0% 4:0.0% 5:47.9% 6-10:50.9% 11-20:1.1% 21-63:0.1%  (dt<=3: 0.0%)
-10800 queries x 2 backends (all agree) in 104.8 s on 12 threads
+10800 queries x 2 backends (all agree) in 106.8 s on 12 threads
 
 len   channel         snr | recall  track wrongT holdFP |  pSurv  hSurv pSurv2   both  vratio |   pk/s  hashes     scan/q   scan/q50
 3     clean           inf |  0.950  1.000  0.000  0.020 |  1.000  1.000  1.000  1.000    4.52 |   59.0     768     549063     545040

@@ -23,6 +23,8 @@ typedef struct {
     int max_df;
 
     int offset_bin;
+    /* Scoring only: 1 scores each bin alone, 2 scores each track by its best sum of bins b and b+1. */
+    int score_window;
     int min_score;
     float min_ratio;
 } fp_config;
@@ -46,6 +48,7 @@ static inline fp_config fp_config_default(void)
     c.max_df = 128;
 
     c.offset_bin = 1;
+    c.score_window = 1;
     c.min_score = 5;
     c.min_ratio = 2.0f;
     return c;

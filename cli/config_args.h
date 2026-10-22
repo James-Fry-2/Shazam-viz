@@ -25,6 +25,7 @@ static inline int config_arg(fp_config *c, int argc, char **argv, int *i)
         {"--min-dt", 0, offsetof(fp_config, min_dt)},
         {"--max-dt", 0, offsetof(fp_config, max_dt)},
         {"--max-df", 0, offsetof(fp_config, max_df)},
+        {"--score-window", 0, offsetof(fp_config, score_window)},
         {"--min-score", 0, offsetof(fp_config, min_score)},
         {"--min-ratio", 1, offsetof(fp_config, min_ratio)},
     };
@@ -46,6 +47,7 @@ static inline int config_arg(fp_config *c, int argc, char **argv, int *i)
 
 #define CONFIG_ARGS_USAGE \
     "  config: --bands n --threshold x --min-magnitude-db x --fan-out n --min-dt n --max-dt n --max-df n\n" \
-    "          --min-score n --min-ratio x   (an index and its queries must share the fingerprint fields)\n"
+    "          --score-window 1|2 --min-score n --min-ratio x\n" \
+    "          (an index and its queries must share the fingerprint fields)\n"
 
 #endif

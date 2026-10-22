@@ -39,7 +39,7 @@ int fp_config_validate(const fp_config *c)
         return -1;
     if (c->max_df < 0 || c->max_df > FP_MAX_F)
         return -1;
-    if (c->offset_bin < 1)
+    if (c->offset_bin < 1 || c->score_window < 1 || c->score_window > 2)
         return -1;
     return 0;
 }
