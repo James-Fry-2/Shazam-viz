@@ -1,6 +1,6 @@
 # Progress
 
-## Phase 1 (in progress): steps 1.1–1.6 done, 1.7 remaining
+## Phase 1 (complete): steps 1.1–1.7 done
 
 ### 1.1 Config, FFT, fingerprint
 Radix-2 FFT, spectrogram, per-band peak picking, pair hashing, seeded RNG. Self-test covers the impulse spectrum, a 1 kHz sine peak at bin 128 and the hash round trip.
@@ -61,3 +61,11 @@ Root cause: peaks use only 60–88 effective f bins (half of them in 14–25 bin
 
 ### Open points
 - Subjective listening check of the synthetic tracks (1.4 "Done when") is still to be done by ear.
+
+### 1.7 Docs
+- `docs/parameters.md` now has an entry (default, unit, reason) for every `fp_config` field. `max_df`, the band edges, `max_dt`, `min_score` and `min_ratio` were not swept in step 1.6, and the file says so.
+- `docs/results-phase1.md` holds six summary tables generated from `docs/results/*.csv` with the awk command shown above each table, plus the step 1.6 flags copied unchanged.
+- Reproducibility: `make` is clean under `-Werror`, `build/fp-selftest` passes, and `sh bench/accuracy_phase1.sh grid` regenerates `docs/results/accuracy_phase1.csv` byte for byte (`git diff --exit-code` is clean). Only the wall-clock timing lines in the `.txt` log differ between runs.
+- `.gitignore` covers `build/`, `data/audio/` and `data/audio-detune/`, and `git ls-files '*.wav'` prints nothing.
+
+The decisions listed under "Flags for review" above are unresolved and need an answer before phase 2.

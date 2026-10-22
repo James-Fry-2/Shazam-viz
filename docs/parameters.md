@@ -1,7 +1,29 @@
 # Parameters
 
-Every tunable lives in `fp_config` (`core/fp_config.h`). This file covers the
-fields that step 1.6 tuned. Step 1.7 completes it for the remaining fields.
+Every tunable lives in `fp_config` (`core/fp_config.h`). The sections "Peak
+picking" and "Pairing" cover the fields that step 1.6 tuned. "Signal framing",
+"Bands", "Pair limits" and "Scoring" cover the rest, so every field has an entry.
+
+Derived quantities at the defaults: 513 spectrogram bins spaced 7.81 Hz apart
+(8000 / 1024), 15.625 frames per second (8000 / 512), and a 64 ms hop.
+
+| Field | Default | Unit |
+|---|---|---|
+| `sample_rate` | 8000 | Hz |
+| `window_size` | 1024 | samples (128 ms) |
+| `hop_size` | 512 | samples (64 ms) |
+| `num_bands` | 6 | bands |
+| `band_lo_hz` | 100 | Hz |
+| `band_hi_hz` | 4000 | Hz |
+| `threshold` | 6.0 | ratio of band maximum to band mean |
+| `min_magnitude_db` | −80 | dB relative to a full-scale sine |
+| `fan_out` | 5 | pairs per anchor |
+| `min_dt` | 5 | frames |
+| `max_dt` | 63 | frames |
+| `max_df` | 128 | spectrogram bins |
+| `offset_bin` | 1 | frames per vote bin |
+| `min_score` | 5 | votes |
+| `min_ratio` | 2.0 | winner score / runner-up score |
 
 The evidence comes from `docs/results/sweep_phase1.csv` (reduced grid: 5 s and
 10 s clips, clean and speaker+echo, SNR ∞/10/5/0, 100 indexed + 50 holdout clips)
@@ -111,6 +133,77 @@ with similar pooled recall (0.717) but 2 holdout FPs in one cell. It was not exp
 Index statistics at the defaults: 1.80M entries, 50,294 distinct hashes, mean
 posting list 35.7, entry-weighted list 692 (measured 681 entries scanned per
 query hash), max 5,398, f1 == f2 on 13.6% of entries.
+
+## Signal framing
+
+### sample_rate = 8000 Hz
+Fixed by the task: mono audio resampled to 8 kHz. Nyquist is 4 kHz, which keeps
+the speech and music range that survives a phone speaker and microphone and
+keeps the FFT small. The browser app resamples recordings to this rate with
+`OfflineAudioContext`. WAV files at other rates are resampled on load by the
+windowed-sinc resampler in `core/resample.c`. The index stores this field and
+refuses queries built with a different rate.
+
+### window_size = 1024 samples
+Fixed by the task. A Hann window of 1024 samples is 128 ms and gives 7.81 Hz
+bins. It must be a power of two (the FFT is radix-2) and at most 1024, because
+the peak bin `f` is stored in 9 bits and only bins 1..511 are used, so that
+`window_size / 2 − 1 ≤ 511`. `fp_config_validate` enforces both.
+
+### hop_size = 512 samples
+Fixed by the task: 50% overlap, 64 ms per frame. The periodic Hann window sums
+exactly to one at this hop, which the phase 4 band-filtering and resynthesis
+rely on. The hop also sets the time resolution of the offset: one frame is
+64 ms, and the offset bin width is counted in frames.
+
+## Bands
+
+### num_bands = 6, band_lo_hz = 100, band_hi_hz = 4000
+Six log-spaced bands between 100 Hz and Nyquist, as specified. The edges, rounded to
+bins, are about 100, 185, 342, 632, 1170, 2163 and 4000 Hz. They are 11, 20, 37,
+69, 127 and 235 bins wide. Below 100 Hz a phone speaker and microphone pass almost
+nothing, and bin 0 (DC) is excluded anyway. The upper edge is Nyquist because
+there is nothing above it. The band widths matter for `threshold`: see the
+ratio cap discussed under that field. `FP_MAX_BANDS` is 16.
+These three values were not swept in step 1.6.
+
+## Pair limits
+
+### max_dt = 63 frames
+The target zone reaches 63 frames ahead (about 4.0 s), as specified. 63 is the
+largest value that fits the 6-bit `dt` field in the hash, and `fp_config_validate`
+rejects larger values. It was not swept. The pairing section above explains why
+the lower limit `min_dt` moved to 5.
+
+### max_df = 128 bins
+Pairs are only formed between peaks at most 128 bins apart, about 1 kHz. Together
+with the 9-bit `f` fields this keeps pairs local in frequency so that a band-limited
+channel, such as the speaker's 380 Hz to 3.3 kHz response, still leaves usable
+pairs. The default came from the original design and was not swept in step 1.6, so
+there is no measurement here showing it is the best value. 511 (no limit) is the
+largest allowed.
+
+## Scoring
+
+### offset_bin = 1 frame
+Each lookup casts a vote for `floor((tDb − tQuery) / offset_bin)` in the
+candidate track. One frame is 64 ms, the finest resolution the hashes carry. See
+"Unchanged, but flagged" below for the split-vote problem this causes when a clip
+starts near half a frame. Scoring-only: it is not stored in the index file, and
+changing it needs no re-index.
+
+### min_score = 5 votes
+The winning bin must hold at least 5 votes. The value is a floor against clips
+with almost no pairs, not the main false-positive guard: holdout clips reach best-wrong
+scores of several hundred on 10 s queries, so `min_ratio` does the work there.
+Scoring-only. Flagged below.
+
+### min_ratio = 2.0
+The winner must score at least 2.0 times the best score of any other track. A true
+match on a 10 s clean query scores about 2,600 to 4,200 against a runner-up of
+about 470 to 560, a ratio of 5 or more, while the ratio test is what rejects
+unindexed tracks. The value was not swept in step 1.6. Scoring-only. Flagged
+below.
 
 ## Unchanged, but flagged by step 1.6
 - `offset_bin` = 1 and single-bin scoring: when the clip's start is near half a
