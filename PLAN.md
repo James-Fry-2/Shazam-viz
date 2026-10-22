@@ -105,29 +105,57 @@ brew install ffmpeg node emscripten
 - `git init`, then commit "Phase 1: core matcher, CLI, synthetic data, accuracy test".
 - **STOP.** Report the parameter choices, the density vs recall/FP table, and measured vs predicted hash survival. Wait for review before phase 2.
 
+### 1.8 Two-bin offset scoring and exact-bin survival metric (Opus 5.5, high effort)
+- **Files:** `core/fp_config.h`, `core/fingerprint.c`, `core/match.c`, `cli/config_args.h`, `cli/fp-accuracy.c`, `cli/fp-selftest.c`, `bench/accuracy_phase1.sh`, docs.
+- **`score_window`** (1 or 2, scoring-only, not in the index snapshot): 2 scores each track by its best sum of bins b and b+1, adjacent by value. Reports the bin with more votes, the lower on a tie. `runner_up` and `top[3]` use the windowed scores. `--score-window` flag.
+- **Exact survival:** CSV columns `peak_survival_exact` and `pred_hash_survival_exact`, appended after the existing ones.
+- **Results:** window 2 halves the wrong-offset rate and holds holdout FPs, but lowers recall under noise with `min_ratio` 2.0, so the default stays 1. The step 1.6 figure of 37 of 404 did not reproduce. Details in `docs/progress.md` and `docs/results-phase1.md`.
+- **Done when:** the grid is re-run at both windows with every query identical on both backends, and the before and after tables are in `docs/results-phase1.md`.
+
+### 1.9 Lessons from real recordings (Opus 5.5, high effort)
+Source: the side project `~/Repos/Audio-Fingerprint-Test` (`fp.py`, Python, same hash layout). Its phone and mic recordings matched through the C matcher unchanged (`ThrowThemRec.wav`: 481 votes vs 1, same offset as `fp.py`), so the core works on real audio. These changes address the open flags in `docs/progress.md`. Each one changes an invariant in `CLAUDE.md`, so update `CLAUDE.md` and `docs/parameters.md` with it. Measure each change on its own with the step 1.6 grid, keeping `--impl both` passing.
+- **Window the offset score.** Done in step 1.8 as a 2-bin window (`score_window`), left at 1 by default because it lowers recall under the current `min_ratio`; the 3-bin window and same-track runner-up exclusion proposed here were not built. The 37 of 404 figure did not reproduce at the final defaults. Choose the window and the decision rule together. Real recordings never share the reference's frame grid, so this matters more outside the simulator.
+- **Suppress repeated hashes.** Keep only the first copy of a hash within `repeat_window` (default 4) frames of its last occurrence, updating the last-seen time even for dropped copies. A held tone produces the same hash every frame, and each copy votes for a different offset. This is the targeted fix for the sustained-note false positives (the `f1 == f2` cases), and it is local, so a clip and a full song agree. Try it before dropping `f1 == f2` pairs.
+- **Target a peak density per file.** Bisect the threshold on the file's own peaks to hit `peaks/s`, with a minimum threshold. A fixed ratio finds almost nothing in a noisy room, and the grid already shows recall tracking density (speaker+echo 10 s: 0.98 at 60 peaks/s, 0.60 at 14). Compute band max and mean once per frame so the bisection is cheap. The index and the query then pick peaks by different thresholds, which is fine because hashes depend only on peak positions.
+- **Normalise level before analysis.** Scale to a fixed RMS, measured on non-silent 100 ms blocks (blocks above 1e-3 of the loudest). The linear peak test is scale invariant but `min_magnitude_db` and the `log1p` display are not. An iPad voice memo at RMS 0.004 fingerprinted to zero peaks in `fp.py` before this.
+- **Revisit the decision rule with real clips.** `fp.py` accepts at 10 votes and 3× the runner-up; the C defaults of 5 and 2× are the rule flagged for accepting noise matches of 6 vs 3. Add the real recordings to the sweep.
+- **Leave whitening off.** `fp.py` implements per-bin median subtraction and it hurt matching, so do not add it.
+- **Done when:** the grid is re-run, the CSV shows holdout FPs and wrong-offset wins no worse than before and recall no worse, and the real recordings still match under `--impl both`. Report the before and after for each change separately.
+- **STOP** and wait for review before phase 2.
+
 ---
 
-## Phase 2: dataset + benchmark
+## Phase 2: dataset
 
-### 2.1 FMA dataset script (Sonnet 5.5, medium effort)
-- **Files:** `data/fetch_fma.sh`.
-- Download `fma_metadata.zip` and `fma_small.zip` from the URLs listed in the github.com/mdeff/fma README. Check the published SHA1s. Unzip each into its own fresh directory.
-- Select N tracks (default 200, seeded) and parse `tracks.csv` for title, artist, licence and track id. Use `awk` if it copes with the CSV quoting; otherwise use the existing `python3 -I` with just the stdlib `csv` module.
-- Convert with `ffmpeg -ac 1 -ar 8000 -sample_fmt s16`. Write `tracks.tsv` and `tracks.json`, and mark 50 of the tracks as holdout.
-- **Done when:** the indexing and accuracy runs work on real data unchanged.
+Real music from FMA, plus a small set of real phone recordings. Synthetic channels share one frame grid with the clean clip by construction; only the real set shows the grid mismatch. Step 2.1 can run before 1.8 is committed; 2.2 and 2.3 need its final config.
 
-### 2.2 Modern FFT and the equivalence question (Opus 5.5, high effort)
-- **Files:** `core/fft_modern.c`.
-- A real-input FFT (pack N real samples as an N/2 complex FFT, then post-process), radix-4 or split-radix, written so clang auto-vectorises it with NEON.
-- **Decide and document in `docs/parameters.md`:** different floating-point summation can flip a peak that sits exactly at the threshold. Recommended approach: fingerprint correctness is *peak-set equality within tolerance* (report the mismatch rate), and match equivalence is tested on the *same hash list*, so the index and scoring comparison stays exact.
+FMA files stay apart from the synthetic set: downloads in `data/fma/`, audio in `data/audio-fma/` (both gitignored), manifests in `data/tracks-fma.{tsv,json}`. `data/tracks.tsv` stays synthetic.
 
-### 2.3 Benchmark harness and report (Opus 5.5, high effort)
-- **Files:** `bench/bench.c`, `bench/report.sh`, `docs/benchmark.md`.
-- Build two binaries: `bench-2003` (naive backend, scalar FFT, single thread, `-O2 -fno-tree-vectorize -fno-slp-vectorize`) and `bench-modern` (`-O3 -mcpu=native`, optional pthreads lookup).
-- **Measure:** fingerprint time per 10 s query, lookup time, entries scanned per query, index bytes per track, and ns per scanned entry. Take the median of ≥ 20 runs after warm-up, using `clock_gettime(CLOCK_MONOTONIC)`. Tracing must be off.
-- **Separate code gains from hardware gains:** compare naive vs modern on the same M4 for the code gain. Estimate hardware with a stated scaling assumption (e.g. a 2003 Pentium 4 at ~3 GHz, citing published SPECint ratios) and label it clearly as an estimate.
-- **Extrapolate to 1.8M tracks:** entries scanned grows roughly linearly with index size for a fixed hash distribution. Show the formula and its assumptions, including the cache misses a 2003 machine would take.
-- Commit and update `progress.md`.
+### 2.1 FMA fetch and convert (Sonnet 5.5, medium effort)
+- **Files:** `data/fetch_fma.sh`, `data/fma_select.c` (Makefile target `build/fma_select`), `data/README.md`, `.gitignore`.
+- Download `fma_metadata.zip` and `fma_small.zip` (about 7.6 GB together; you run it) into `data/fma/`, using the URLs and SHA1s in the github.com/mdeff/fma README. Skip a download whose SHA1 already matches. Unzip each into its own fresh directory.
+- `fma_select <tracks.csv> --seed n --indexed 200 --holdout 50` is C, not Python. It parses RFC 4180 (quoted fields with commas and newlines), skips the 3 header lines, keeps `set.subset == small`, and draws through `core/rng.h`, stratified by `track.genre_top`. It prints `fma_id, title, artist, licence, genre, split` as TSV, plus seeded spares.
+- Convert in parallel with `ffmpeg -nostdin -v error -i X -ac 1 -ar 8000 -sample_fmt s16`. A few fma_small files fail to decode or are short, so reject anything that fails or is under 29 s and take the next spare in the same split.
+- Write `data/tracks-fma.tsv` (`id<TAB>path<TAB>split`, readable by `cli/manifest.c` unchanged) and `data/tracks-fma.json` (title, artist, licence, fma_id, genre, split). `INDEXED`, `HOLDOUT` and `JOBS` override the defaults, as in `make_synthetic.sh`.
+- **Done when:** a second run reproduces both manifests byte for byte, `git ls-files '*.wav' '*.mp3'` prints nothing, and `build/fp-index data/tracks-fma.tsv -o build/index-fma.bin` runs and prints peaks/s, entries, distinct hashes and the f1 == f2 share.
+
+### 2.2 FMA accuracy grid (Opus 5.5, high effort). After 1.8 is committed
+- Run the step 1.6 grid, with the final 1.8 config, on `data/tracks-fma.tsv` through a new `fma` mode in `bench/accuracy_phase1.sh`, writing `docs/results/accuracy_phase2_fma.{csv,txt}`.
+- Compare with the synthetic grid: recall, holdout FP, wrong-offset rate, posting-list stats, f1 == f2 share and entries scanned.
+- Explain every holdout FP. FMA has some duplicate audio under different ids. Report those as duplicates rather than filtering them out.
+- **Done when:** the grid runs on real data without code changes, both backends agree, and `docs/progress.md` has the synthetic vs FMA table.
+
+### 2.3 Real-channel test set (you record, then Opus 5.5, high effort)
+- **You:** play 10 to 20 indexed FMA tracks on a phone speaker and record 10 s each on the laptop mic (or the reverse), varying distance and room. Save to `data/real/*.wav` (gitignored), with `data/real/real.tsv` listing `wav, fma_id, approx_start_s, device, distance, room`.
+- **Shared metrics:** move the survival metrics from `cli/fp-accuracy.c` into `core/metrics.{c,h}` so phase 5 can use them in WASM. `bench/accuracy_phase1.sh grid` must still reproduce the CSV byte for byte.
+- **Ground truth:** a hand-noted start is only good to about ±0.5 s (8 frames). Find the true sample offset by normalised cross-correlation of the recording against the reference within ±2 s of the noted start, band-limited to 300–3000 Hz, and report the peak-to-second-peak ratio as a confidence. This doesn't use the fingerprint, so the check isn't circular.
+- **`cli/fp-realset.c`:** for each recording, report:
+  - The match: hit (true track, winner within ±1 bin of `floor(sample/hop)`), wrong offset, wrong track, or no match. Both backends must agree.
+  - Peak survival, hash survival and p², measured two ways: (a) against the reference cut at the xcorr sample (shared grid, the simulator's metric) and (b) against the reference on the index's frame grid. (a) − (b) is the grid-mismatch loss.
+  - A simulator check: `channel.c` speaker+echo on the (a) excerpt at the recording's measured SNR, with survival compared to (a).
+- Write `docs/results/realset_phase2.{csv,txt}`.
+- **Done when:** real-set recall is reported next to the simulated channels, the grid-mismatch loss is quantified, and the simulator-vs-real gap is written up in `docs/progress.md`.
+- **STOP** and wait for review before phase 3.
 
 ---
 
@@ -136,7 +164,7 @@ brew install ffmpeg node emscripten
 ### 3.1 Trace output (Sonnet 5.5, medium effort)
 - **Files:** `core/trace.{c,h}`.
 - A JSON writer into a growable buffer (no deps). Contents: config; spectrogram as uint8 (`255 × log1p / max`), base64; peaks; pairs; each lookup with its hits and offsets; vote histograms for the top 3 candidates; the result.
-- Enabled by an `fp_trace *` argument; `NULL` means off. Off in `bench/`.
+- Enabled by an `fp_trace *` argument; `NULL` means off. Off in any benchmark run.
 - `fp-query --trace out.json`.
 
 ### 3.2 WASM build (Sonnet 5.5, medium effort)
@@ -147,6 +175,8 @@ brew install ffmpeg node emscripten
 - Vite + TS, no framework (or Preact if the views get heavy). Use CSS variables for light/dark, and make it mobile-first.
 - Call `getUserMedia({audio:{echoCancellation:false, noiseSuppression:false, autoGainControl:false}})`. Record 10 s through an AudioWorklet, with a live waveform and a countdown.
 - Resample with `OfflineAudioContext(1, 10*8000, 8000)`, pass the result to WASM, get the trace back, and show the match.
+- With AGC off the input is quiet. Normalise the level before the spectrogram display (step 1.9), or the view is flat.
+- The recording's frame grid never lines up with the reference's, so test with a clip whose start is not a multiple of the hop.
 - **Done when:** on your phone, playing a synthetic track from a laptop speaker matches.
 
 Commit and update `progress.md`.
@@ -180,6 +210,10 @@ Commit and update `progress.md`.
 - Align the query peaks to the reference peaks using the match offset. Classify each peak as survived (same t, |Δf| ≤ 1), lost, or added.
 - Show survival per band. Show measured hash survival against the peak_survival² prediction, and explain why they can differ (fan-out pairs aren't independent, and the target zone can shift).
 - Reuse the phase 1 metric code so the CLI and web numbers agree.
+- Layout reference: `~/Repos/Audio-Fingerprint-Test/fp.py`, `plot_report`. Three panels: spectrogram with survived, lost and new peaks and band lines; every hash hit as query time against reference time with the winning diagonal in a second colour; the offset histogram with the winner marked.
+- Pick one survival tolerance and use it for both metrics. `fp.py` allows ±1 frame and ±1 bin for peaks and ±1 frame for hashes. The C metric uses exact t, so the two give different numbers for the same recording.
+- Real data to explain: a phone recording of a track kept 80% of peaks but only 35% of hashes, against 64% predicted by p². The frame grid mismatch rounds some Δt values differently, which the shared-grid simulator cannot show. Include a real-recording example in the explanation.
+- Show per-band survival. Small phone speakers wipe out the lowest bands, and the view makes the reason visible.
 
 ### 5.2 Simulator (Sonnet 5.5)
 - A bundled demo track: one of the CC0 synthetic tracks, or an FMA track whose licence allows redistribution.
@@ -195,3 +229,22 @@ Commit and update `progress.md`.
 - Scaffold only: scene timing in one config, one working scene end to end, and the others stubbed.
 
 Commit and update `progress.md`.
+
+---
+
+## Phase 7 (optional): modern FFT and 2003-vs-modern benchmark
+Do this only after the visualisation work is done.
+
+### 7.1 Modern FFT and the equivalence question (Opus 5.5, high effort)
+- **Files:** `core/fft_modern.c`.
+- A real-input FFT (pack N real samples as an N/2 complex FFT, then post-process), radix-4 or split-radix, written so clang auto-vectorises it with NEON.
+- **Decide and document in `docs/parameters.md`:** different floating-point summation can flip a peak that sits exactly at the threshold. Recommended approach: fingerprint correctness is *peak-set equality within tolerance* (report the mismatch rate), and match equivalence is tested on the *same hash list*, so the index and scoring comparison stays exact.
+
+### 7.2 Benchmark harness and report (Opus 5.5, high effort)
+- **Files:** `bench/bench.c`, `bench/report.sh`, `docs/benchmark.md`.
+- Build two binaries: `bench-2003` (naive backend, scalar FFT, single thread, `-O2 -fno-tree-vectorize -fno-slp-vectorize`) and `bench-modern` (`-O3 -mcpu=native`, optional pthreads lookup).
+- **Measure:** fingerprint time per 10 s query, lookup time, entries scanned per query, index bytes per track, and ns per scanned entry. Take the median of ≥ 20 runs after warm-up, using `clock_gettime(CLOCK_MONOTONIC)`. Tracing must be off.
+- **Separate code gains from hardware gains:** compare naive vs modern on the same M4 for the code gain. Estimate hardware with a stated scaling assumption (e.g. a 2003 Pentium 4 at ~3 GHz, citing published SPECint ratios) and label it clearly as an estimate.
+- **Extrapolate to 1.8M tracks:** entries scanned grows roughly linearly with index size for a fixed hash distribution. Show the formula and its assumptions, including the cache misses a 2003 machine would take.
+- Commit and update `progress.md`.
+

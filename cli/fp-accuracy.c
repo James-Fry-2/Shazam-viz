@@ -33,10 +33,10 @@ typedef struct {
     uint32_t clip_track, true_track, track;
     int32_t offset;
     double r;
-    uint32_t score, runner_up, true_score, wrong_score;
+    uint32_t score, runner_up, true_score, true_window_score, wrong_score;
     uint64_t entries;
     uint32_t pairs, query_peaks;
-    uint32_t clean_peaks, surv_peaks, clean_hashes, surv_hashes, both_exact;
+    uint32_t clean_peaks, surv_peaks, surv_peaks_exact, clean_hashes, surv_hashes, both_exact;
 } record;
 
 typedef struct {
@@ -93,10 +93,11 @@ static int cmp_u64(const void *a, const void *b)
     return (x > y) - (x < y);
 }
 
-/* Counts clean peaks with a degraded peak at the same t and |df| <= 1; exact[i] marks an identical (t, f). */
-static uint32_t peak_survivors(const fp_analysis *clean, const fp_analysis *deg, uint8_t *exact)
+/* Counts clean peaks with a degraded peak at the same t and |df| <= 1; exact[i] marks an identical (t, f), counted in *n_exact. */
+static uint32_t peak_survivors(const fp_analysis *clean, const fp_analysis *deg, uint8_t *exact, uint32_t *n_exact)
 {
     uint32_t s = 0;
+    *n_exact = 0;
     size_t j = 0;
     for (size_t i = 0; i < clean->num_peaks; i++) {
         const fp_peak *p = &clean->peaks[i];
@@ -109,6 +110,7 @@ static uint32_t peak_survivors(const fp_analysis *clean, const fp_analysis *deg,
             exact[i] |= deg->peaks[k].f == p->f;
         }
         s += (uint32_t)near;
+        *n_exact += exact[i];
     }
     return s;
 }
@@ -256,13 +258,21 @@ static void run_unit(ctx *c, fp_fingerprinter *fpr, int li, int clip)
                     if (v->track == tr->id) {
                         if (abs(v->bin - true_bin) <= 1 && v->count > o->true_score)
                             o->true_score = v->count;
+                        if (abs(v->bin - true_bin) <= 1) {
+                            uint32_t w = v->count;
+                            if (cfg->score_window == 2 && k + 1 < vm.n && vm.v[k + 1].track == tr->id &&
+                                vm.v[k + 1].bin == v->bin + 1)
+                                w += vm.v[k + 1].count;
+                            if (w > o->true_window_score)
+                                o->true_window_score = w;
+                        }
                     } else if (v->count > o->wrong_score) {
                         o->wrong_score = v->count;
                     }
                 }
             }
             o->clean_peaks = (uint32_t)clean.num_peaks;
-            o->surv_peaks = peak_survivors(&clean, &a, exact);
+            o->surv_peaks = peak_survivors(&clean, &a, exact, &o->surv_peaks_exact);
             for (size_t k = 0; k < clean_np; k++)
                 o->both_exact += exact[clean_pairs[k].a_idx] && exact[clean_pairs[k].b_idx];
             uint64_t *keys = pair_keys(pairs, np);
@@ -534,8 +544,8 @@ int main(int argc, char **argv)
         die("finalize failed");
     const double db_pps = (double)db_peaks / ((double)db_samples / sr);
 
-    printf("config: threshold %g, min_magnitude_db %g, fan_out %d, min_dt %d, max_dt %d, max_df %d\n",
-           cfg->threshold, cfg->min_magnitude_db, cfg->fan_out, cfg->min_dt, cfg->max_dt, cfg->max_df);
+    printf("config: threshold %g, min_magnitude_db %g, fan_out %d, min_dt %d, max_dt %d, max_df %d, score_window %d\n",
+           cfg->threshold, cfg->min_magnitude_db, cfg->fan_out, cfg->min_dt, cfg->max_dt, cfg->max_df, cfg->score_window);
     printf("index: %zu tracks, %zu entries, %.1f peaks/s\n", n_idx, fp_index_num_entries(c.modern), db_pps);
     fp_hash_stats hs;
     if (fp_index_hash_stats(c.modern, &hs) == 0)
@@ -602,7 +612,8 @@ int main(int argc, char **argv)
             fprintf(out, "density,threshold,min_mag_db,fan_out,min_dt,db_peaks_per_s,clip_len,channel,snr,"
                          "n_indexed,n_holdout,recall,track_recall,wrong_offset_rate,wrong_track_rate,"
                          "holdout_fp_rate,peak_survival,hash_survival,pred_hash_survival,pair_endpoint_survival,median_vote_ratio,"
-                         "query_peaks_per_s,hashes_per_query,entries_scanned_per_query\n");
+                         "query_peaks_per_s,hashes_per_query,entries_scanned_per_query,"
+                         "peak_survival_exact,pred_hash_survival_exact\n");
     }
     FILE *detail = NULL;
     if (detail_path) {
@@ -611,7 +622,7 @@ int main(int argc, char **argv)
             die("cannot open --detail");
         if (!append || ftell(detail) == 0)
             fprintf(detail, "density,clip_len,channel,snr,holdout,clip_track,start,r,matched,track,offset,score,runner_up,"
-                            "true_score,wrong_score,hit,track_hit,entries,pairs\n");
+                            "true_score,wrong_score,hit,track_hit,entries,pairs,true_window_score\n");
     }
 
     printf("\n%-5s %-13s %5s | %6s %6s %6s %6s | %6s %6s %6s %6s %7s | %6s %7s %10s %10s\n", "len", "channel", "snr",
@@ -624,12 +635,13 @@ int main(int argc, char **argv)
         for (int ci = 0; ci < c.num_channels; ci++) {
             for (int si = 0; si < c.num_snrs; si++) {
                 int hits = 0, thits = 0, wrongt = 0, wrongo = 0, fps = 0;
-                double cp = 0, sp = 0, ch = 0, sh = 0, be = 0, ent = 0, prs = 0, qp = 0;
+                double cp = 0, sp = 0, spe = 0, ch = 0, sh = 0, be = 0, ent = 0, prs = 0, qp = 0;
                 size_t nr = 0;
                 for (int k = 0; k < c.num_clips; k++) {
                     const record *o = &c.rec[rec_index(&c, li, k, ci, si)];
                     cp += o->clean_peaks;
                     sp += o->surv_peaks;
+                    spe += o->surv_peaks_exact;
                     ch += o->clean_hashes;
                     sh += o->surv_hashes;
                     be += o->both_exact;
@@ -646,13 +658,13 @@ int main(int argc, char **argv)
                         tmp[nr++] = (double)o->true_score / (o->wrong_score ? o->wrong_score : 1);
                     }
                     if (detail)
-                        fprintf(detail, "%s,%g,%s,%g,%d,%u,%zu,%.4f,%d,%d,%d,%u,%u,%u,%u,%d,%d,%llu,%u\n", label,
+                        fprintf(detail, "%s,%g,%s,%g,%d,%u,%zu,%.4f,%d,%d,%d,%u,%u,%u,%u,%d,%d,%llu,%u,%u\n", label,
                                 c.lengths[li], CHANNEL_NAMES[c.channels[ci]], c.snrs[si],
                                 o->holdout, o->clip_track,
                                 c.starts[(size_t)li * c.num_clips + k], o->r, o->matched,
                                 o->track == FP_NO_TRACK ? -1 : (int)o->track, o->offset, o->score, o->runner_up,
                                 o->true_score, o->wrong_score, o->hit, o->track_hit,
-                                (unsigned long long)o->entries, o->pairs);
+                                (unsigned long long)o->entries, o->pairs, o->true_window_score);
                 }
                 const double vr = median(tmp, nr);
                 for (int k = 0; k < c.num_clips; k++)
@@ -661,6 +673,7 @@ int main(int argc, char **argv)
                 const double ni = n_indexed ? n_indexed : 1, nh = n_holdout ? n_holdout : 1;
                 const double recall = hits / ni;
                 const double psurv = cp ? sp / cp : NAN, hsurv = ch ? sh / ch : NAN;
+                const double pexact = cp ? spe / cp : NAN;
                 const double pps = qp / (c.num_clips * c.lengths[li]);
                 rec_by_snr[si] = recall;
                 printf("%-5g %-13s %5g | %6.3f %6.3f %6.3f %6.3f | %6.3f %6.3f %6.3f %6.3f %7.2f | %6.1f %7.0f %10.0f %10.0f\n",
@@ -669,11 +682,11 @@ int main(int argc, char **argv)
                        ent / c.num_clips, ent_med);
                 if (out)
                     fprintf(out,
-                            "%s,%g,%g,%d,%d,%.2f,%g,%s,%g,%d,%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.2f,%.1f,%.1f\n",
+                            "%s,%g,%g,%d,%d,%.2f,%g,%s,%g,%d,%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.2f,%.1f,%.1f,%.4f,%.4f\n",
                             label, cfg->threshold, cfg->min_magnitude_db, cfg->fan_out, cfg->min_dt, db_pps,
                             c.lengths[li], CHANNEL_NAMES[c.channels[ci]], c.snrs[si], n_indexed, n_holdout, recall,
                             thits / ni, wrongo / ni, wrongt / ni, fps / nh, psurv, hsurv, psurv * psurv, ch ? be / ch : NAN, vr, pps,
-                            prs / c.num_clips, ent / c.num_clips);
+                            prs / c.num_clips, ent / c.num_clips, pexact, pexact * pexact);
             }
             /* SNRs are listed from cleanest to noisiest, so recall must not rise along the list. */
             for (int si = 1; si < c.num_snrs; si++)
