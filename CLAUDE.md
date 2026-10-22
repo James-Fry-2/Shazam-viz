@@ -23,7 +23,7 @@ The step-by-step build plan, with the recommended model for each step, is in
 - `build/fp-index data/tracks.tsv -o build/index.bin`
 - `build/fp-query build/index.bin clip.wav --impl both`: runs both backends and asserts identical results.
 - `build/fp-accuracy data/tracks.tsv --out x.csv [--detail y.csv]`: seeded accuracy grid; both backends on every query, aborts if they differ.
-- `bench/accuracy_phase1.sh [grid|detune|sweep]`: regenerates `docs/results/accuracy_phase1*.{csv,txt}` and `sweep_phase1.{csv,txt}`.
+- `bench/accuracy_phase1.sh [grid|window1|window2|detune|sweep]`: regenerates `docs/results/accuracy_phase1*.{csv,txt}` and `sweep_phase1.{csv,txt}`.
 
 ## Environment
 - macOS, Apple M4 Pro, Apple clang 17, make, git.
